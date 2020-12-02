@@ -1,135 +1,79 @@
 import socket
+import hamming
+from header_types import Header_Types
+import selectors
+import session_prot
 
-def init_server():
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    server_address = ('localhost', 10000)
-    sock.bind(server_address)
-    print('server is running')
-    return sock
+BUFF_SIZE = 4096
 
-def convert_to_bits(input_data):
-    return ''.join(f"{ord(i):08b}" for i in input_data)
+class MySocket:
 
-def generate_hamming_code(input_data):
-    bits_sequence = list(input_data)
-    bits_sequence.reverse()
-    c = 0
-    ch = 0 # indx pos
-    j = 0 
-    r = 0 # redunded bits
-    h = [] # haming code
-
-    while (len(input_data) + r + 1) > (pow(2, r)):
-        r = r + 1
-
-    for i in range(0, (r + len(bits_sequence))):
-        p = 2 ** c
-
-        if p == (i + 1):
-            h.append(0)
-            c = c + 1
-        
+    def __init__(self, sock = None):
+        self.clients_addresses = []
+        if sock is None:
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.session = session_prot.Session()
+            self.selector = selectors.DefaultSelector()
+            self.sock.setblocking(False)
+            self.selector.register(self.sock, selectors.EVENT_READ, self.receive_message)
         else:
-            h.append(int(bits_sequence[j]))
-            j = j + 1
+            self.sock = sock
 
-    for par in range(0, len(h)):
-        ph = 2 ** ch
+    def bind_server(self, host, port):
+        self.sock.bind((host, port))
+        self.host = host
+        self.port = port
 
-        if ph == (par + 1):
-            index = ph - 1
-            i = index
-            xor = []
+    def close_sock(self):
+        self.sock.close()
 
-            while i < len(h):
-                block = h[i:i + ph]
-                xor.extend(block)
-                i += 2 * ph
+    def select_loop(self):
+        while True:
+            events = self.selector.select()
+            for key, mask in events:
+                callback = key.data
+                callback()
 
-            for z in range(1, len(xor)):
-                h[index] = h[index] ^ xor[z]
-            
-            ch += 1
+    def receive_message(self):
+        data, address = self.sock.recvfrom(BUFF_SIZE)
+        msg = hamming.correct_and_decrypt_hamming_code(data.decode())
+        msg = hamming.to_string(msg)
+        header = msg[:Header_Types.header_size.value]
 
-    h.reverse()
-    return str(''.join(map(str, h)))
+        if header == Header_Types.ping.value:
+            print('ping detected')
+            self.clients_addresses.append(address[1])
 
+        elif header == Header_Types.delete_number.value:
+            print('del number')
+            self.clients_addresses.remove(address[1])
 
-def correct_and_decrypt_hamming_code(input_data):
-    bits_sequence = list(input_data)
-    bits_sequence.reverse()
-    c = 0
-    ch = 0
-    error = 0
-    h = []
-    parity_list = []
-    parity_index_list = []
-    h_corrected = []
+        elif header == Header_Types.syn_message.value:
+            print('incoming call request from ' + str(address[1]))
+            self.session.other_client_number = address[1]
+            self.session.gen_full_key(int(msg[Header_Types.header_size.value:]))
 
-    for k in range(0, len(bits_sequence)):
-        p = 2 ** c
-        h.append(int(bits_sequence[k]))
-        h_corrected.append(bits_sequence[k])
+        elif header == Header_Types.syn_response.value:
+            self.session.other_client_number = address[1]
+            self.session.gen_full_key(int(msg[Header_Types.header_size.value:]))
+            print('Connection established')
 
-        if p == (k + 1):
-            c = c + 1
+        elif header == Header_Types.end_message.value:
+            print(msg[Header_Types.header_size.value:])
 
-    for par in range(0, len(h)):
-        ph = 2 ** ch
+        elif header == Header_Types.encrypted_end_message.value:
+            decypted_msg = self.session.decrypt_message(msg[Header_Types.header_size.value:])
+            print(decypted_msg)
 
-        if ph == (par + 1):
-            index = ph - 1
-            i = index
-            xor = []
-
-            while i < len(h):
-                block = h[i:i + ph]
-                xor.extend(block)
-                i += 2 * ph
-
-            for z in range(1, len(xor)):
-                h[index] = h[index] ^ xor[z]
-            
-            parity_list.append(h[par])
-            parity_index_list.append(index)
-            ch += 1
-    
-    parity_list.reverse()
-    error=sum(int(parity_list) * (2 ** i) for i, parity_list in enumerate(parity_list[::-1]))
-
-    if error == 0:
-        for i, n in enumerate(h):
-            if i in parity_index_list:
-                h[i] = 2
-
-        h = list(filter(lambda x: x != 2, h))
-        h.reverse()
-        return str(''.join(map(str, h)))
-
-    elif error >= len(h_corrected):
-        print('error can\'t be detected')
-
-    else:
-        print('error is corrected')
-        if h_corrected[error - 1] == '0':
-            h_corrected[error - 1] = '1'
-
-        elif h_corrected[error - 1] == '1':
-            h_corrected[error - 1] = '0'
-
-        for i, n in enumerate(h_corrected):
-            if i in parity_index_list:
-                h_corrected[i] = 2
-
-        h_corrected = list(filter(lambda x: x != 2, h_corrected))
-        h_corrected.reverse()
-        return str(''.join(map(str, h_corrected)))
+        elif header == Header_Types.request_clients_numbers.value:
+            clients_addresses_string_list = [str(int) for int in self.clients_addresses]
+            clients_addresses_string = '\n'.join(clients_addresses_string_list)
+            self.send_message(Header_Types.end_message.value + clients_addresses_string, address[0], address[1])
 
 
-def to_string(binary_sequence):
-    binary_int = int(binary_sequence, 2)
-    byte_number = binary_int.bit_length() + 7 // 8
-    binary_array = binary_int.to_bytes(byte_number, 'big')
-    ascii_text = binary_array.decode()
+    def send_message(self, data, host, address):
+        data = hamming.generate_hamming_code(hamming.convert_to_bits(data))
+        self.sock.sendto(data.encode(), (host, address))
 
-    return ascii_text
+        
+        

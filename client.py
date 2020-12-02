@@ -1,19 +1,9 @@
-import socket
-import ClientObject
-from transport_prot import *
+import transport_prot
+import application_prot
+import session_prot
 
 def client():
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    server_adrress = ('localhost', 10000)
-
-    try:
-        sock.sendto(''.encode(), server_adrress)
-        data, address = sock.recvfrom(4096)
-        data = correct_and_decrypt_hamming_code(data.decode())
-        print(to_string(data))
-
-    finally:
-        sock.close()
+    app = application_prot.Application()
 
 if __name__ == "__main__":
     client()
